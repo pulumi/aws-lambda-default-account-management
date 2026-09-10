@@ -1,11 +1,11 @@
 {
-    "name": "aws-typescript",
+    "name": "aws-lambda-default-account-management-iam",
     "devDependencies": {
-        "@types/node": "^8.0.0"
+        "@types/node": "^18.0.0",
+        "typescript": "^5.0.0"
     },
     "dependencies": {
-        "@pulumi/pulumi": "^1.0.0",
-        "@pulumi/aws": "^1.0.0",
-        "@pulumi/awsx": "^0.18.10"
+        "@pulumi/aws": "6.83.4",
+        "@pulumi/pulumi": "^3.0.0"
     }
 }

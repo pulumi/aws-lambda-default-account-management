@@ -1,8 +1,25 @@
+import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
+
+// Owner is load-bearing, not documentation: pulumi/aws-account-cleanup deletes
+// resources in this account that carry no Owner tag, matching the key
+// case-insensitively. Removing it from any resource here schedules that
+// resource for deletion.
+function stackIDTagOrganization(): string {
+    const name = pulumi.getOrganization();
+    return name === "organization" || name === "pulumi-corp" ? "pulumi" : name;
+}
+
+const tags = {
+    "Owner": "github.com/pulumi/aws-lambda-default-account-management/iam",
+    "Purpose": "DefaultAccountManagement",
+    "pulumi:stack-id": `${stackIDTagOrganization()}/${pulumi.getProject()}/${pulumi.getStack()}`,
+};
 
 const lambdaRole = new aws.iam.Role("my-lambda-role", {
     name: "lambda-role-for-account-default-management",
     assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({ Service: "lambda.amazonaws.com" }),
+    tags,
 });
 
 const lambdaRolePolicy = new aws.iam.Policy("my-policy", {
@@ -21,6 +38,7 @@ const lambdaRolePolicy = new aws.iam.Policy("my-policy", {
             Effect: "Allow",
         }],
     },
+    tags,
 });
 
 const policyAttachment = new aws.iam.RolePolicyAttachment("my-attachment", {
