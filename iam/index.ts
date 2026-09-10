@@ -23,14 +23,19 @@ const lambdaRolePolicy = new aws.iam.Policy("my-policy", {
     },
 });
 
-const policyAttachment = new aws.iam.PolicyAttachment("my-attachment", {
+const policyAttachment = new aws.iam.RolePolicyAttachment("my-attachment", {
     policyArn: lambdaRolePolicy.arn,
-    roles: [lambdaRole],
+    role: lambdaRole.name,
 });
 
-const attachCloudwatchLogs = new aws.iam.PolicyAttachment("cloudwatch-attachment", {
+// RolePolicyAttachment, not PolicyAttachment: the latter is exclusive and owns
+// the whole account's principal list for a policy ARN, so it revokes
+// attachments it does not manage. Three stacks attach
+// AWSLambdaBasicExecutionRole in this account, and whichever applied last was
+// silently detaching the other two.
+const attachCloudwatchLogs = new aws.iam.RolePolicyAttachment("cloudwatch-attachment", {
     policyArn: aws.iam.ManagedPolicies.AWSLambdaBasicExecutionRole,
-    roles: [lambdaRole]
+    role: lambdaRole.name,
 });
 
 export const iamArn = lambdaRole.arn;
