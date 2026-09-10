@@ -11,8 +11,6 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
-// fakeEC2 records what it was asked and replays canned answers. Subnet pages
-// are served one per DescribeSubnets call so paging is exercised for real.
 type fakeEC2 struct {
 	vpcs         []ec2types.Vpc
 	vpcsErr      error
@@ -94,7 +92,6 @@ func subnetIn(az string) ec2types.Subnet {
 	return ec2types.Subnet{AvailabilityZone: aws.String(az)}
 }
 
-// withCreateEnabled sets the global for one test and restores it after.
 func withCreateEnabled(t *testing.T, v bool) {
 	t.Helper()
 	prev := CreateEnabled
@@ -143,8 +140,6 @@ func TestMissingVpcIsCreatedAndUsedForSubnetLookup(t *testing.T) {
 	if f.createVPCCalls != 1 {
 		t.Fatalf("createVPCCalls = %d, want 1", f.createVPCCalls)
 	}
-	// The subnet lookup must be scoped to the VPC that was just created, not
-	// to the empty id the lookup started with.
 	if !hasFilter(f.subnetFilters, "vpc-id", "vpc-new") {
 		t.Errorf("subnet lookup filters = %v, want vpc-id=vpc-new", f.subnetFilters)
 	}
@@ -278,8 +273,6 @@ func TestZoneLookupExcludesUnusableZones(t *testing.T) {
 	if err := reconcile(context.Background(), f); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	// CreateDefaultSubnet rejects local and Wavelength zones, and an opted-out
-	// zone cannot hold one at all; both must be filtered server-side.
 	if !hasFilter(f.azFilters, "zone-type", "availability-zone") {
 		t.Errorf("az filters %v do not exclude local/Wavelength zones", f.azFilters)
 	}
@@ -294,8 +287,6 @@ func TestDefaultVpcLookupIsFilteredServerSide(t *testing.T) {
 	if err := reconcile(context.Background(), f); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	// Without is-default the first VPC in the account would be adopted as the
-	// default, which is how a non-default VPC gets default subnets attached.
 	if !hasFilter(f.vpcFilters, "is-default", "true") {
 		t.Errorf("vpc filters = %v, want is-default=true", f.vpcFilters)
 	}

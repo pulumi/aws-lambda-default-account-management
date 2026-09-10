@@ -19,9 +19,6 @@ import (
 // exercise the discovery paths against a live account without changing it.
 var CreateEnabled = true
 
-// ec2API is the subset of *ec2.Client this program uses. Depending on the
-// interface rather than the concrete client is what lets the tests drive the
-// paging and error paths.
 type ec2API interface {
 	DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error)
 	CreateDefaultVpc(context.Context, *ec2.CreateDefaultVpcInput, ...func(*ec2.Options)) (*ec2.CreateDefaultVpcOutput, error)
@@ -51,8 +48,6 @@ func HandleRequest(ctx context.Context) error {
 	return reconcile(ctx, ec2.NewFromConfig(cfg))
 }
 
-// reconcile ensures the region has a default VPC and a default subnet in every
-// usable availability zone.
 func reconcile(ctx context.Context, client ec2API) error {
 	vpcID, err := defaultVPC(ctx, client)
 	if err != nil {
@@ -154,7 +149,6 @@ func usableZones(ctx context.Context, client ec2API) ([]string, error) {
 	return zones, nil
 }
 
-// zonesWithDefaultSubnet reports which zones already hold a default subnet.
 // The default-for-az filter is what makes this correct: a zone may hold many
 // subnets, but at most one of them is the default.
 func zonesWithDefaultSubnet(ctx context.Context, client ec2API, vpcID string) (map[string]bool, error) {
