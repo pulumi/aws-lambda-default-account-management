@@ -28,14 +28,26 @@ const policyAttachment = new aws.iam.RolePolicyAttachment("my-attachment", {
     role: lambdaRole.name,
 });
 
-// RolePolicyAttachment, not PolicyAttachment: the latter is exclusive and owns
-// the whole account's principal list for a policy ARN, so it revokes
-// attachments it does not manage. Three stacks attach
-// AWSLambdaBasicExecutionRole in this account, and whichever applied last was
-// silently detaching the other two.
-const attachCloudwatchLogs = new aws.iam.RolePolicyAttachment("cloudwatch-attachment", {
-    policyArn: aws.iam.ManagedPolicies.AWSLambdaBasicExecutionRole,
+// A stack-specific policy rather than the AWS-managed
+// AWSLambdaBasicExecutionRole. That policy is contended in this account: five
+// stacks attached it with aws.iam.PolicyAttachment, the exclusive form, which
+// owns the policy's entire principal list and revokes attachments it does not
+// manage. This role lost it that way, which is why these nine Lambdas have not
+// written a log line since 2020-04-22.
+//
+// Two of the contending stacks live in archived repositories and still name
+// the managed policy, so no change here can stop them. Not using the shared
+// ARN is what makes that irrelevant.
+const cloudwatchLogs = new aws.iam.RolePolicy("cloudwatch-logs", {
     role: lambdaRole.name,
+    policy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+            Resource: "*",
+        }],
+    }),
 });
 
 export const iamArn = lambdaRole.arn;
