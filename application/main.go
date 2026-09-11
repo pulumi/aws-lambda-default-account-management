@@ -71,11 +71,10 @@ func reconcile(ctx context.Context, client ec2API) error {
 		if vpcID, err = createDefaultVPC(ctx, client); err != nil {
 			return err
 		}
-		// CreateDefaultVpc also creates a default subnet in every availability
-		// zone, so there is nothing left to reconcile. Returning here rather
-		// than falling through matters: DescribeSubnets is eventually
-		// consistent, so the read-back would miss those subnets and every
-		// zone would get a CreateDefaultSubnet that fails as a conflict.
+		// CreateDefaultVpc also creates the default subnets, so reconciling now
+		// would read back an eventually-consistent empty set and issue a
+		// CreateDefaultSubnet per zone that fails as a conflict. Any zone it
+		// did not cover is picked up by the next scheduled run.
 		log.Printf("Created default VPC %s and its default subnets", vpcID)
 		return nil
 	}
@@ -126,11 +125,7 @@ func alreadyExists(err error) bool {
 	if !errors.As(err, &apiErr) {
 		return false
 	}
-	switch apiErr.ErrorCode() {
-	case "InvalidSubnet.Conflict", "DefaultSubnetAlreadyExistsInAvailabilityZone":
-		return true
-	}
-	return false
+	return apiErr.ErrorCode() == "InvalidSubnet.Conflict"
 }
 
 // defaultVPC returns the region's default VPC id, or "" when there is none.

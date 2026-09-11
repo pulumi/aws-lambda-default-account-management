@@ -51,6 +51,15 @@ for (const providerKey of Object.keys(providers)) {
         tags,
     }, {provider});
 
+    // Declared, and depended on, so the group exists with this retention before
+    // anything can invoke the function. Left implicit, the Lambda service
+    // creates it on first invocation with no expiry and outside this stack.
+    const logGroup = new aws.cloudwatch.LogGroup(`lambda-logs-${providerKey}`, {
+        name: `/aws/lambda/${lambdaName}`,
+        retentionInDays: 30,
+        tags,
+    }, {provider});
+
     const lambda = new aws.lambda.Function(`my-lambda-function-${providerKey}`, {
         name: lambdaName,
         runtime: aws.lambda.Runtime.CustomAL2023,
@@ -65,13 +74,7 @@ for (const providerKey of Object.keys(providers)) {
             },
         },
         tags,
-    }, {provider});
-
-    const logGroup = new aws.cloudwatch.LogGroup(`lambda-logs-${providerKey}`, {
-        name: `/aws/lambda/${lambdaName}`,
-        retentionInDays: 30,
-        tags,
-    }, {provider});
+    }, {provider, dependsOn: [logGroup]});
 
     const lambdaPermission = new aws.lambda.Permission(`allow-cloudwatch-to-trigger-${providerKey}`, {
         statementId: "AllowExecutionFromCloudWatch",

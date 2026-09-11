@@ -21,7 +21,9 @@ silently and then fails at init in every region. Use `make deploy`, which rebuil
 If the region has no default VPC, then a request will be made to the `CreateDefaultVpc` endpoint in the EC2 API. This will
 create all of the Subnets, internet gateway and route tables that are usually present in the AWS account
 
-Creating the default VPC also creates a default Subnet in every availability zone, so the run ends there.
+Creating the default VPC also creates the default Subnets, so the run ends there rather than reading them back — the
+read would be eventually consistent and every zone would get a redundant request. Any zone it did not cover is picked
+up by the next scheduled run.
 
 If the default VPC already exists, the application checks every *usable* availability zone — available, opted-in, and not a
 Local or Wavelength zone, since `CreateDefaultSubnet` rejects those — and creates a default Subnet in any that lacks one.

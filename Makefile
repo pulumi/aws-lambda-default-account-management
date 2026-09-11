@@ -1,4 +1,7 @@
-VERSION ?= $(shell git rev-parse --short HEAD)$(shell git diff --quiet || echo -dirty)
+GITSHA  := $(shell git rev-parse --short HEAD 2>/dev/null)
+# --quiet HEAD, not --quiet: staged-but-uncommitted changes are dirty too.
+GITDIRT := $(shell git diff --quiet HEAD 2>/dev/null || echo -dirty)
+VERSION ?= $(if $(GITSHA),$(GITSHA)$(GITDIRT),unknown)
 ZIP     := deployment.zip
 
 .PHONY: ensure test buildapp verify deploy

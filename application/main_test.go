@@ -16,6 +16,7 @@ import (
 
 type fakeEC2 struct {
 	vpcs         []ec2types.Vpc
+	vpcPages     [][]ec2types.Vpc
 	vpcsErr      error
 	createdVPC   string
 	createVPCEr  error
@@ -26,6 +27,7 @@ type fakeEC2 struct {
 	subnetsErr   error
 
 	describeSubnetCalls int
+	describeVpcCalls    int
 	badToken            string
 	createdSubnets      []string
 	failSubnetsIn       map[string]bool
@@ -41,7 +43,31 @@ func (f *fakeEC2) DescribeVpcs(_ context.Context, in *ec2.DescribeVpcsInput, _ .
 	if f.vpcsErr != nil {
 		return nil, f.vpcsErr
 	}
-	return &ec2.DescribeVpcsOutput{Vpcs: f.vpcs}, nil
+	f.describeVpcCalls++
+	if len(f.vpcPages) == 0 {
+		return &ec2.DescribeVpcsOutput{Vpcs: f.vpcs}, nil
+	}
+	if f.describeVpcCalls > len(f.vpcPages)+2 {
+		return nil, fmt.Errorf("DescribeVpcs called %d times for %d pages: token not advancing",
+			f.describeVpcCalls, len(f.vpcPages))
+	}
+	page := 0
+	if tok := aws.ToString(in.NextToken); tok != "" {
+		n, err := strconv.Atoi(strings.TrimPrefix(tok, "page-"))
+		if err != nil {
+			f.badToken = tok
+			return &ec2.DescribeVpcsOutput{}, nil
+		}
+		page = n
+	}
+	if page >= len(f.vpcPages) {
+		return &ec2.DescribeVpcsOutput{}, nil
+	}
+	out := &ec2.DescribeVpcsOutput{Vpcs: f.vpcPages[page]}
+	if page+1 < len(f.vpcPages) {
+		out.NextToken = aws.String(fmt.Sprintf("page-%d", page+1))
+	}
+	return out, nil
 }
 
 func (f *fakeEC2) CreateDefaultVpc(_ context.Context, _ *ec2.CreateDefaultVpcInput, _ ...func(*ec2.Options)) (*ec2.CreateDefaultVpcOutput, error) {
@@ -416,5 +442,33 @@ func TestPagingFollowsTheServersToken(t *testing.T) {
 	}
 	if f.describeSubnetCalls != 2 {
 		t.Errorf("describeSubnetCalls = %d, want 2", f.describeSubnetCalls)
+	}
+}
+
+func TestDefaultVpcFoundOnALaterPage(t *testing.T) {
+	withCreateEnabled(t, true)
+	// EC2 can return a page that matches nothing but carries a token. Treating
+	// the first empty page as "no default VPC" would create a second one.
+	f := &fakeEC2{
+		vpcPages: [][]ec2types.Vpc{
+			{},
+			{{VpcId: aws.String("vpc-late")}},
+		},
+		zones: []string{"us-west-2a"},
+		subnetPages: [][]ec2types.Subnet{
+			{subnetIn("us-west-2a")},
+		},
+	}
+	if err := reconcile(context.Background(), f); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if f.createVPCCalls != 0 {
+		t.Errorf("created a VPC despite one existing on page 2")
+	}
+	if f.badToken != "" {
+		t.Errorf("sent an unrecognised page token %q", f.badToken)
+	}
+	if !hasFilter(f.subnetFilters, "vpc-id", "vpc-late") {
+		t.Errorf("subnet lookup filters = %v, want vpc-id=vpc-late", f.subnetFilters)
 	}
 }
