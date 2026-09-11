@@ -1,6 +1,8 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 
+// Kept in sync by hand with lambda/index.ts: the two Pulumi projects
+// share no module, and pulumi:stack-id is read by external tooling.
 function stackIDTagOrganization(): string {
     const name = pulumi.getOrganization();
     return name === "organization" || name === "pulumi-corp" ? "pulumi" : name;

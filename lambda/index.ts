@@ -12,6 +12,8 @@ const lambdaName = "lambda-for-account-default-management";
 // apply silently reverts.
 const createEnabled = config.getBoolean("createEnabled") ?? true;
 
+// Kept in sync by hand with iam/index.ts: the two Pulumi projects
+// share no module, and pulumi:stack-id is read by external tooling.
 function stackIDTagOrganization(): string {
     const name = pulumi.getOrganization();
     return name === "organization" || name === "pulumi-corp" ? "pulumi" : name;
