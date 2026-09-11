@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 type fakeEC2 struct {
@@ -23,8 +26,10 @@ type fakeEC2 struct {
 	subnetsErr   error
 
 	describeSubnetCalls int
+	badToken            string
 	createdSubnets      []string
 	failSubnetsIn       map[string]bool
+	conflictSubnetsIn   map[string]bool
 	azFilters           []ec2types.Filter
 	vpcFilters          []ec2types.Filter
 	subnetFilters       []ec2types.Filter
@@ -67,20 +72,42 @@ func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInpu
 	if f.subnetsErr != nil {
 		return nil, f.subnetsErr
 	}
-	page := f.describeSubnetCalls
 	f.describeSubnetCalls++
+	if f.describeSubnetCalls > len(f.subnetPages)+2 {
+		// A loop that never advances the token would otherwise spin here until
+		// the test binary's timeout, which reads as a hang rather than a bug.
+		return nil, fmt.Errorf("DescribeSubnets called %d times for %d pages: token not advancing",
+			f.describeSubnetCalls, len(f.subnetPages))
+	}
+
+	// The page is selected by the caller's token, not by a call counter, so a
+	// loop that never assigns out.NextToken re-reads page 0 forever here just
+	// as it would against EC2. A counter-driven fake advances on its own and
+	// hides exactly that bug.
+	page := 0
+	if tok := aws.ToString(in.NextToken); tok != "" {
+		n, err := strconv.Atoi(strings.TrimPrefix(tok, "page-"))
+		if err != nil {
+			f.badToken = tok
+			return &ec2.DescribeSubnetsOutput{}, nil
+		}
+		page = n
+	}
 	if page >= len(f.subnetPages) {
 		return &ec2.DescribeSubnetsOutput{}, nil
 	}
 	out := &ec2.DescribeSubnetsOutput{Subnets: f.subnetPages[page]}
 	if page+1 < len(f.subnetPages) {
-		out.NextToken = aws.String("more")
+		out.NextToken = aws.String(fmt.Sprintf("page-%d", page+1))
 	}
 	return out, nil
 }
 
 func (f *fakeEC2) CreateDefaultSubnet(_ context.Context, in *ec2.CreateDefaultSubnetInput, _ ...func(*ec2.Options)) (*ec2.CreateDefaultSubnetOutput, error) {
 	az := aws.ToString(in.AvailabilityZone)
+	if f.conflictSubnetsIn[az] {
+		return nil, &smithy.GenericAPIError{Code: "InvalidSubnet.Conflict", Message: "already exists"}
+	}
 	if f.failSubnetsIn[az] {
 		return nil, errors.New("boom")
 	}
@@ -131,17 +158,23 @@ func TestExistingVpcIsNotRecreated(t *testing.T) {
 	}
 }
 
-func TestMissingVpcIsCreatedAndUsedForSubnetLookup(t *testing.T) {
+func TestCreatingTheVpcEndsTheRun(t *testing.T) {
 	withCreateEnabled(t, true)
-	f := &fakeEC2{createdVPC: "vpc-new", zones: []string{"us-west-2a"}}
+	f := &fakeEC2{createdVPC: "vpc-new", zones: []string{"us-west-2a", "us-west-2b"}}
 	if err := reconcile(context.Background(), f); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if f.createVPCCalls != 1 {
 		t.Fatalf("createVPCCalls = %d, want 1", f.createVPCCalls)
 	}
-	if !hasFilter(f.subnetFilters, "vpc-id", "vpc-new") {
-		t.Errorf("subnet lookup filters = %v, want vpc-id=vpc-new", f.subnetFilters)
+	// CreateDefaultVpc creates a default subnet per zone, and DescribeSubnets
+	// would not see them yet. Reconciling on would produce one conflict per
+	// zone and report the successful run as a failure.
+	if f.describeSubnetCalls != 0 {
+		t.Errorf("read subnets %d times after creating the VPC", f.describeSubnetCalls)
+	}
+	if len(f.createdSubnets) != 0 {
+		t.Errorf("created subnets %v after creating the VPC", f.createdSubnets)
 	}
 }
 
@@ -239,7 +272,7 @@ func TestDescribeVpcsErrorIsReturned(t *testing.T) {
 	}
 }
 
-func TestSubnetPagingErrorIsReturned(t *testing.T) {
+func TestSubnetLookupErrorAbortsBeforeCreating(t *testing.T) {
 	withCreateEnabled(t, true)
 	f := &fakeEC2{
 		vpcs:       []ec2types.Vpc{{VpcId: aws.String("vpc-1")}},
@@ -273,11 +306,18 @@ func TestZoneLookupExcludesUnusableZones(t *testing.T) {
 	if err := reconcile(context.Background(), f); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !hasFilter(f.azFilters, "zone-type", "availability-zone") {
-		t.Errorf("az filters %v do not exclude local/Wavelength zones", f.azFilters)
+	want := [][2]string{
+		{"zone-type", "availability-zone"},
+		{"opt-in-status", "opted-in"},
+		// Dropping this one excludes every standard zone in every commercial
+		// region, and the job would silently reconcile nothing.
+		{"opt-in-status", "opt-in-not-required"},
+		{"state", "available"},
 	}
-	if !hasFilter(f.azFilters, "opt-in-status", "opted-in") {
-		t.Errorf("az filters %v do not constrain opt-in status", f.azFilters)
+	for _, w := range want {
+		if !hasFilter(f.azFilters, w[0], w[1]) {
+			t.Errorf("az filters %v are missing %s=%s", f.azFilters, w[0], w[1])
+		}
 	}
 }
 
@@ -292,5 +332,89 @@ func TestDefaultVpcLookupIsFilteredServerSide(t *testing.T) {
 	}
 	if !hasFilter(f.subnetFilters, "default-for-az", "true") {
 		t.Errorf("subnet filters = %v, want default-for-az=true", f.subnetFilters)
+	}
+}
+
+func TestZoneLookupErrorIsReturned(t *testing.T) {
+	withCreateEnabled(t, true)
+	f := &fakeEC2{
+		vpcs:     []ec2types.Vpc{{VpcId: aws.String("vpc-1")}},
+		zonesErr: errors.New("zone lookup exploded"),
+	}
+	err := reconcile(context.Background(), f)
+	if err == nil || !strings.Contains(err.Error(), "zone lookup exploded") {
+		t.Fatalf("err = %v, want the zone lookup failure", err)
+	}
+	if len(f.createdSubnets) != 0 {
+		t.Errorf("created subnets without knowing the zone list")
+	}
+}
+
+func TestVpcCreationErrorIsReturned(t *testing.T) {
+	withCreateEnabled(t, true)
+	f := &fakeEC2{createVPCEr: errors.New("quota exceeded"), zones: []string{"us-west-2a"}}
+	err := reconcile(context.Background(), f)
+	if err == nil || !strings.Contains(err.Error(), "quota exceeded") {
+		t.Fatalf("err = %v, want the VPC creation failure", err)
+	}
+	if f.describeSubnetCalls != 0 || len(f.createdSubnets) != 0 {
+		t.Errorf("continued past a failed VPC creation")
+	}
+}
+
+func TestExistingSubnetConflictIsNotAFailure(t *testing.T) {
+	withCreateEnabled(t, true)
+	// A concurrent run, or a retry after a call that in fact succeeded, races
+	// us to the same zone. The zone ends up correct either way.
+	f := &fakeEC2{
+		vpcs:              []ec2types.Vpc{{VpcId: aws.String("vpc-1")}},
+		zones:             []string{"us-west-2a", "us-west-2b"},
+		conflictSubnetsIn: map[string]bool{"us-west-2a": true},
+	}
+	if err := reconcile(context.Background(), f); err != nil {
+		t.Fatalf("a conflict on an existing default subnet was reported as failure: %v", err)
+	}
+}
+
+func TestFailureErrorNamesTheZoneAndTheCause(t *testing.T) {
+	withCreateEnabled(t, true)
+	f := &fakeEC2{
+		vpcs:          []ec2types.Vpc{{VpcId: aws.String("vpc-1")}},
+		zones:         []string{"us-west-2a", "us-west-2b"},
+		failSubnetsIn: map[string]bool{"us-west-2b": true},
+	}
+	err := reconcile(context.Background(), f)
+	if err == nil {
+		t.Fatal("nil error despite a failed creation")
+	}
+	// Without the cause, a permanent AccessDenied is indistinguishable from a
+	// routine capacity refusal in CloudWatch.
+	if !strings.Contains(err.Error(), "us-west-2b") || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error %q names neither the zone nor the underlying cause", err)
+	}
+	// The denominator counts attempts, not every zone in the region.
+	if !strings.Contains(err.Error(), "1 of 2") {
+		t.Errorf("error %q does not report failures over attempts", err)
+	}
+}
+
+func TestPagingFollowsTheServersToken(t *testing.T) {
+	withCreateEnabled(t, true)
+	f := &fakeEC2{
+		vpcs:  []ec2types.Vpc{{VpcId: aws.String("vpc-1")}},
+		zones: []string{"us-west-2a", "us-west-2b"},
+		subnetPages: [][]ec2types.Subnet{
+			{subnetIn("us-west-2a")},
+			{subnetIn("us-west-2b")},
+		},
+	}
+	if err := reconcile(context.Background(), f); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if f.badToken != "" {
+		t.Errorf("sent an unrecognised page token %q", f.badToken)
+	}
+	if f.describeSubnetCalls != 2 {
+		t.Errorf("describeSubnetCalls = %d, want 2", f.describeSubnetCalls)
 	}
 }

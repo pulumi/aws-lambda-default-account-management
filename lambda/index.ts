@@ -7,15 +7,20 @@ const stackRef = new pulumi.StackReference(`${iamStackName}/${pulumi.getStack()}
 
 const lambdaName = "lambda-for-account-default-management";
 
-// Owner is load-bearing, not documentation: pulumi/aws-account-cleanup deletes
-// resources in this account that carry no Owner tag, matching the key
-// case-insensitively. Removing it from any resource here schedules that
-// resource for deletion.
+// Set `pulumi config set createEnabled false` to make the job discovery-only.
+// Editing the function's environment in the console instead is drift the next
+// apply silently reverts.
+const createEnabled = config.getBoolean("createEnabled") ?? true;
+
 function stackIDTagOrganization(): string {
     const name = pulumi.getOrganization();
     return name === "organization" || name === "pulumi-corp" ? "pulumi" : name;
 }
 
+// Owner is load-bearing, not documentation: pulumi/aws-account-cleanup deletes
+// resources in this account that carry no Owner tag, matching the key
+// case-insensitively. Removing it from any resource here schedules that
+// resource for deletion.
 const tags = {
     "Owner": "github.com/pulumi/aws-lambda-default-account-management/lambda",
     "Purpose": "DefaultAccountManagement",
@@ -54,11 +59,15 @@ for (const providerKey of Object.keys(providers)) {
         code: new pulumi.asset.FileArchive("../deployment.zip"),
         environment: {
             variables: {
-                // Set to "false" to exercise the job against a live account
-                // without creating anything.
-                CREATE_ENABLED: "true",
+                CREATE_ENABLED: createEnabled ? "true" : "false",
             },
         },
+        tags,
+    }, {provider});
+
+    const logGroup = new aws.cloudwatch.LogGroup(`lambda-logs-${providerKey}`, {
+        name: `/aws/lambda/${lambdaName}`,
+        retentionInDays: 30,
         tags,
     }, {provider});
 
